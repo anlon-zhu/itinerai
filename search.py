@@ -1,10 +1,11 @@
-from datetime import date, timedelta
+from datetime import date, timedelta, datetime
 from location_state import LocationState
-from travel_action import TravelAction
+from travel_action import FlightSegment, TravelAction
 from typing import List
 from duffel_api import Duffel
 import asyncio
 from duffel_wrapper import DuffelWrapper
+from isodate import parse_duration
 
 
 class BestFirstSearch:
@@ -28,70 +29,94 @@ class BestFirstSearch:
         for airport in next_airports:
             # Step 1. Duffel: partial offer requests for (multi-city) flights from current city to another city
             # TODO: try a number of days window
-            flights = self.duffel.search_flights_partial(
-                state.airport_iata, airport, state.date)
+            response = self.duffel.search_flights_partial(
+                state.airport_iata, airport, state.datetime)
 
-            for offer in flights.offers:
-                total_amount = offer.total_amount
-                # total_emissions_kg = offer.total_emissions_kg
-                # total_currency = offer.total_currency
-                # tax_currency = offer.tax_currency
-                # tax_amount = offer.tax_amount
-                # supported_passenger_identity_document_types = offer.supported_passenger_identity_document_types
+            for offer in response.offers:
+                if len(offer.slices) == 0:
+                    raise ValueError("No slices found in offer")
 
-                for slice_data in offer.slices:
-                    # departure_date = slice_data.departure_date
+                # We request 1 slice (point A to point B), so this always returns 1 slice
+                slice = offer.slices[0]
 
-                    for segment in slice_data.segments:
-                        stops = segment.stops
-                        operating_carrier_flight_number = segment.operating_carrier_flight_number
-                        operating_carrier_name = segment.operating_carrier.name
-                        duration = segment.duration
-                        distance = segment.distance
-                        # origin_name = segment.origin.name
-                        # origin_city_name = segment.origin.city_name
-                        # destination_name = segment.destination.name
-                        # destination_city_name = segment.destination.city_name
+                action_departing_at = None
+                action_arriving_at = None
+                action_duration = timedelta(0)
+                action_cost = offer.total_amount
+                action_stops = 0
+                action_segments = []
 
-                        # Process stops
-                        for stop in stops:
-                            stop_duration = stop.duration
-                            departing_at = stop.departing_at
-                            arriving_at = stop.arriving_at
-                            stop_airport_name = stop.airport.name
-                            stop_city_name = stop.airport.city_name
-                            # Access more details about the stop as needed
+                # May have multiple segments/stops in an offer
+                for i, segment in enumerate(slice.segments):
+                    # Times
+                    departing_at = segment.departing_at
+                    arriving_at = segment.arriving_at
+                    # Locations
+                    origin_airport = segment.origin.iata_code
+                    destination_airport = segment.destination.iata_code
 
-                        # Process aircraft
-                        # aircraft_name = segment.aircraft.name
+                    # Identification
+                    aircraft = segment.aircraft
+                    marketing_carrier = segment.marketing_carrier
+                    marketing_flight_number = segment.marketing_carrier_flight_number
 
-                    action = TravelAction(
-                        mode="flight",
-                        from_loc=state.airport_iata,
-                        to_loc=airport,  # potential airport
-                        duration=duration,
-                        cost=total_amount,
-                        carrier=operating_carrier_name
-                    )
+                    # nullable attributes
+                    duration = parse_duration(
+                        segment.duration
+                        if segment.duration is not None else 'PT0S')
+                    distance_km = float(
+                        segment.distance) if segment.distance is not None else 0.0
 
-                    actions.append(action)
+                    if i == 0:
+                        if origin_airport != state.airport_iata:
+                            raise ValueError(
+                                f"Origin airport {origin_airport} does not match current state {state.airport_iata}")
+                        action_departing_at = departing_at
+
+                    if i == len(slice.segments) - 1:
+                        if destination_airport != airport:
+                            raise ValueError(
+                                f"Destination airport {destination_airport} does not match goal {airport}")
+                        action_arriving_at = arriving_at
+
+                    cleaned_segment = FlightSegment(
+                        origin=origin_airport,
+                        destination=destination_airport,
+                        departing_at=departing_at,
+                        arriving_at=arriving_at, duration=duration,
+                        distance_km=distance_km, aircraft=aircraft,
+                        marketing_carrier=marketing_carrier,
+                        marketing_flight_number=marketing_flight_number)
+
+                    action_segments.append(cleaned_segment)
+                    action_stops += len(segment.stops)
+                    action_duration += duration
+                    # TODO: Differentiate between flight transfers and stops
+
+                action = TravelAction(
+                    mode="flight", from_loc=state.airport_iata,
+                    to_loc=airport, departing_at=action_departing_at,
+                    arriving_at=action_arriving_at, cost=action_cost,
+                    duration=action_duration, stops=action_stops,
+                    segments=action_segments)
+                actions.append(action)
 
             # Step 2: Google Maps: city A to city B via public transit or rideshare
         return actions
 
     def result(self, state: LocationState, action: TravelAction) -> LocationState:
-        # Assuming action.duration is a timedelta object for simplicity
-        new_date = state.date + action.duration
+        new_date = state.datetime + action.duration
         new_cost = state.cost + action.cost
         new_stops = state.stops + 1
 
-        # Here you might want to check if the new state exceeds budget or max stops
         if new_cost > self.budget or new_stops > self.max_stops:
             return None  # This action leads to an invalid state
 
+        # TODO: edit number of stops and days left logic
         return LocationState(
-            action.to_city, new_date, state.time, state.days_left -
-            action.duration.days, stops=new_stops, cost=new_cost)
+            airport_iata=action.to_loc, city=action.to_loc,
+            datetime=new_date, days_left=state.days_left - 1,
+            stops=new_stops, cost=new_cost)
 
     def cost_fxn(self):
         # Some linear function of cost, time_spent_at_goal, distance from goal
@@ -101,11 +126,11 @@ class BestFirstSearch:
 if __name__ == "__main__":
     # Example initialization of start and goal states
     start_state = LocationState(
-        airport_iata="SNA", city="Santa Ana", date="2024-05-01",
-        time="10:00", days_left=10)
+        airport_iata="SNA", city="Santa Ana", datetime=datetime.now(),
+        days_left=5)
     goal_state = LocationState(
-        airport_iata="EWR", city="Newark", date="2024-05-15",
-        time="10:00", days_left=0)
+        airport_iata="EWR", city="New Jersey", datetime=datetime.now(),
+        days_left=5)
 
     bfs = BestFirstSearch(
         start=start_state, goal=goal_state, budget=1000, max_stops=2,
@@ -114,5 +139,10 @@ if __name__ == "__main__":
     # Run the async actions method in an event loop
     actions = asyncio.run(bfs.actions(start_state))
 
+    actions.sort(key=lambda x: x.cost)
     for action in actions:
-        print(str(action) + f" via {action.carrier} for ${action.cost}")
+        print(str(action))
+        if action.to_loc == goal_state.airport_iata:
+            print("Goal reached!")
+            for segment in action.segments:
+                print(segment)

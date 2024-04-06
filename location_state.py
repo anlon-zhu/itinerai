@@ -1,29 +1,32 @@
 from __future__ import annotations
-from typing import Any, List, Tuple
-from travel_action import TravelAction
+from typing import List
 from duffel_wrapper import DuffelWrapper
 import math
+from datetime import datetime
 
 EARTH_RADIUS_KM = 6371.0
 
 
 class LocationState:
-    def __init__(
-            self, airport_iata, city, date, time, days_left,
-            latitude=None, longitude=None) -> None:
+    '''
+    State class representing location, time, and various budgets.
+    '''
+
+    def __init__(self, airport_iata, city, datetime: datetime,
+                 days_left, stops=0, cost=0, latitude=None,
+                 longitude=None) -> None:
         self.airport_iata = airport_iata
         self.city = city
-        self.date = date
-        self.time = time
+        self.datetime = datetime
         self.days_left = days_left
-        self.stops = 0
-        self.cost = 0
+        self.stops = stops
+        self.cost = cost
         self.latitude = latitude
         self.longitude = longitude
         self.duffel = DuffelWrapper()
 
     def __str__(self) -> str:
-        return f"Airport: {self.airport_iata}, {self.city} \n DateTime: {self.date}, {self.time}"
+        return f"Airport: {self.airport_iata}, {self.city} \n DateTime: {self.datetime}"
 
     def _get_next_airports(
             self, goal_airport: LocationState) -> List[str]:
@@ -115,8 +118,10 @@ class LocationState:
 
 if __name__ == '__main__':
     print('List Places Between Cities')
-    state = LocationState('LAX', 'Los Angeles',
-                          '2024-12-25', '12:00', 7)
-    goal = LocationState('JFK', 'New York City',
-                         '2024-12-31', '12:00', 0)
+    state = LocationState(
+        'LAX', 'Los Angeles', datetime=datetime.now(),
+        days_left=0)
+    goal = LocationState(
+        'JFK', 'New York', datetime=datetime.now(),
+        days_left=0)
     print(state._get_next_airports(goal))

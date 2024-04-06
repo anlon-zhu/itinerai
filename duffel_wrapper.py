@@ -2,6 +2,7 @@ from duffel_api import Duffel
 from dotenv import load_dotenv
 import os
 import requests
+import datetime
 
 load_dotenv()
 
@@ -18,7 +19,8 @@ class DuffelWrapper:
         return offer_request
 
     def search_flights_partial(
-            self, origin, destination, departure_date):
+            self, origin, destination, departure_datetime: datetime):
+        departure_date = departure_datetime.strftime("%Y-%m-%d")
         partial_offer_request = self.client.partial_offer_requests.create().passengers([{"type": "adult"}]).slices(
             [{"origin": origin, "destination": destination, "departure_date": departure_date}]).cabin_class("economy").execute()
         return partial_offer_request
